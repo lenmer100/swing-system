@@ -1,0 +1,158 @@
+"""Klicktest v3: Login-Persistenz, Top-Navigation, Suche, Tabs (?tab=), ?t= überall, reine Analyse (keine Urteile),
+Marktleiste, Chancen-Board mit Filter, Kurschart-Schalter, Swing-Chart-Vollbild, NVDA-Chartmarken, unbekannte URL."""
+import re
+from playwright.sync_api import sync_playwright
+import sys
+BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8502"; PW = __import__("os").environ["DEMO_PASSWORD"]; OUT = "./screenshots/v4_analyse"
+res = []
+def ok(name, cond): res.append((name, "pass" if cond else "FAIL"))
+from playwright.sync_api import Locator
+_click = Locator.click
+def _safe(self, *a, **k):
+    try: return _click(self, *a, **{"timeout": 8000, **k})
+    except Exception as e: res.append(("Klick " + str(self)[:90], "FAIL"))
+Locator.click = _safe
+def main(pg): return pg.locator("[data-testid=stMain]").inner_text()
+def wait(pg, ms=3000): pg.wait_for_timeout(ms)
+def btn(pg, lab, scope="[data-testid=stMain]"): pg.locator(scope + " button", has_text=re.compile("^" + re.escape(lab) + "$")).first.click(); wait(pg)
+BANNED = ["Kaufbereit", "Warten", "Zu teuer", "zu teuer", "Urteil", "Einstiegszone", "Stopp", "Positionsgröße", "Marktampel"]
+with sync_playwright() as p:
+    b = p.chromium.launch(); ctx = b.new_context(viewport={"width": 1440, "height": 1000}); pg = ctx.new_page()
+    pg.goto(BASE, wait_until="networkidle"); wait(pg, 2500)
+    pg.screenshot(path=f"{OUT}/00_login.png")
+    ff = pg.evaluate("() => { const e = document.querySelector('[data-testid=stIconMaterial]'); return e ? getComputedStyle(e).fontFamily : 'none'; }")
+    ok("Login: kein 'Page not found', Icons als Symbolschrift", "Page not found" not in pg.locator("body").inner_text() and ("Material" in ff or ff == "none"))
+    pg.fill('input[type="password"]', PW); pg.keyboard.press("Enter"); wait(pg, 4500)
+    ok("Login: keine Exception", pg.locator('[data-testid="stException"]').count() == 0 and "Aktienanalyse" in main(pg))
+    ok("Marktleiste: mind. 7 Live-Werte, kein k. A.", pg.locator(".mstrip .it").count() >= 7 and "k. A." not in pg.locator(".mstrip").first.inner_text())
+    ok("Keine Seitenleiste sichtbar", not pg.locator('[data-testid="stSidebar"]').is_visible() if pg.locator('[data-testid="stSidebar"]').count() else True)
+    ok("Startseite (neu): Markt heute mit Chart + Liste, Chancen, Zahlentermine", "Chancen aus dem Swing-Pool" in main(pg) and "Zahlentermine der nächsten Tage" in main(pg)
+       and pg.locator(".st-key-chartbox").count() == 1 and pg.locator("[class*=st-key-mrow_]").count() >= 7)
+    ok("Startseite ohne Urteile", not any(w in main(pg) for w in ["Kaufbereit", "Warten", "Zu teuer", "zu teuer"]))
+    pg.locator('a[href^="/swing-tool?t="]').first.click(); wait(pg, 4000)
+    ok("Chancen-Zeile öffnet Swing-Tool ?t=", "swing-tool" in pg.url and "t=" in pg.url and pg.locator('[data-testid="stException"]').count() == 0)
+    pg.locator("a.logo").click(); wait(pg, 4500)
+    ok("Logo führt zur Startseite, weiter angemeldet", "Chancen aus dem Swing-Pool" in main(pg) and pg.locator('input[type="password"]').count() == 0)
+    pg.goto(BASE + "/aktienanalyse", wait_until="networkidle"); wait(pg, 3500)
+    ok("Analyse-Start ohne Urteile", not any(w in main(pg) for w in BANNED))
+    pg.locator(".st-key-topnav [data-testid=stSelectbox]").click(); wait(pg, 800)
+    pg.get_by_role("option", name=re.compile("Meta Platforms")).click(); wait(pg, 3500)
+    ok("Suche in der Kopfzeile öffnet META (?t=META)", "t=META" in pg.url and "Meta Platforms" in main(pg))
+    for tab, marker in (("Analysten", "Einstufungen"), ("Bewertung", "Spanne pessimistisch"), ("Szenarien", "Konservativ"), ("Finanzdaten", "Umsatz"), ("Übersicht", "Kennzahlen")):
+        pg.locator(".st-key-tabs button", has_text=re.compile("^" + tab + "$")).click(); wait(pg, 3500)
+        txt = main(pg)
+        ok(f"Tab {tab}: Inhalt + URL ?tab=, ?t= bleibt", marker in txt and f"tab={tab}".replace("Ü", "%C3%9C") in pg.url.replace("Ü", "%C3%9C") and "t=META" in pg.url)
+        bad = [w for w in BANNED if w in txt]
+        ok(f"Tab {tab}: keine Urteile/Einstiegsdaten {bad if bad else ''}", not bad)
+    # v3.1: Mehr/Weniger anzeigen, Jahr/Quartal, Bewertung nur mit gültigen Modellen, Hover statt statischer Charts
+    ok("Übersicht: Zusatz-Kennzahlen erst im Akkordeon", "Unternehmenswert (EV)" not in main(pg))
+    pg.locator(".st-key-agacc_kennzahlen summary").click(); wait(pg, 3000)
+    ok("Akkordeon 'Alle Kennzahlen' klappt auf", "Unternehmenswert (EV)" in main(pg))
+    pg.locator(".st-key-agacc_kennzahlen summary").click(); wait(pg, 3000)
+    ok("Akkordeon klappt wieder zu", "Unternehmenswert (EV)" not in main(pg))
+    ok("Info-Symbole vorhanden (Kennzahlen)", pg.locator(".ii").count() >= 4)
+    pg.locator(".st-key-tabs button", has_text=re.compile("^Finanzdaten$")).click(); wait(pg, 3500)
+    pg.locator(".st-key-agper_META button", has_text=re.compile("^Quartal$")).click(); wait(pg, 3500)
+    ok("Finanzdaten: Quartal zeigt Quartalswerte, ?per=Quartal", "Vorjahresquartal" in main(pg) and "per=Quartal" in pg.url)
+    pg.reload(wait_until="networkidle"); wait(pg, 4500)
+    ok("Neuladen behält Quartal", "Vorjahresquartal" in main(pg))
+    pg.locator(".st-key-agper_META button", has_text=re.compile("^Jährlich$")).click(); wait(pg, 3000)
+    pg.locator(".st-key-tabs button", has_text=re.compile("^Bewertung$")).click(); wait(pg, 3500)
+    t_ = main(pg)
+    ok("Bewertung v3: Einordnung als Pills + Kaufzone + Damodaran-ERP", "breiter Burggraben" in t_ and "Kaufen unter" in t_ and "Cashflow-DCF" in t_)
+    ok("Bewertung v2: ein fairer Wert + Spanne + Reverse-DCF, keine alten Modelle", "Fairer Wert" in t_ and "Spanne pessimistisch" in t_ and "Markt preist" in t_ and "Median der Modelle" not in t_ and "Graham" not in t_ and "Lynch" not in t_)
+    ok("Bewertung v2: zwei Sensitivitäts-Heatmaps, gesperrt", pg.evaluate("() => { const g = [...document.querySelectorAll('.js-plotly-plot')].filter(x => x._fullData && x._fullData[0] && x._fullData[0].type === 'heatmap'); return g.length === 2 && g.every(x => x._fullLayout.dragmode === false && x._fullLayout.xaxis.fixedrange && x._fullLayout.yaxis.fixedrange); }"))
+    ok("Bewertung v2: keine 'öffnen'-Beschriftung, keine Bildunterschriften", "öffnen" not in t_ and "Reaktion =" not in t_)
+    for k_, w_ in (("v2_dcf", "FCFF"), ("v2_wacc", "Marktrisikoprämie"), ("v2_tv", "Reinvestitionsquote"), ("v2_fpe", "Begründetes KGV"), ("v2_scen", "Pessimistisch"), ("v2_val", "kein Vorsprung"), ("v3_cls", "Burggraben")):
+        pg.locator(f".st-key-agacc_{k_} summary").click(); wait(pg, 1800)
+        ok(f"Bewertung v2: Akkordeon {k_} zeigt '{w_}'", w_ in main(pg))
+    import json as _j; _v = _j.load(open("./" + __import__("os").environ.get("DATA_DIR", "data") + "/valuation_v4.json"))["stocks"]["META"]
+    _fv = f'{_v["range"]["base"]:,.2f}'.replace(",", "X").replace(".", ",").replace("X", ".")
+    ok("Bewertung v4: fairer Wert entspricht valuation_v4.json", _fv in main(pg))
+    pg.locator(".st-key-agacc_kgvhist summary").click(); wait(pg, 3500)
+    ok("Bewertung: Akkordeon zeigt KGV-Historie", pg.locator(".st-key-agacc_kgvhist .js-plotly-plot").count() == 1)
+    pg.locator(".st-key-tabs button", has_text=re.compile("^Finanzdaten$")).click(); wait(pg, 3500)
+    pg.locator(".st-key-agacc_fd_kap summary").click(); wait(pg, 2500)
+    ok("Finanzdaten: Akkordeon Bilanz & Mittelverwendung öffnet direkt", all(w in main(pg) for w in ("Nettoverschuldung", "Aktienrückkäufe")))
+    pg.locator(".st-key-tabs button", has_text=re.compile("^Übersicht$")).click(); wait(pg, 3500)
+    pg.locator(".st-key-agacc_zahlen summary").click(); wait(pg, 3500)
+    ok("Übersicht: vergangene Quartalszahlen mit Kursreaktion", "Vergangene Quartalszahlen" in main(pg) and pg.locator(".st-key-agacc_zahlen .js-plotly-plot").count() == 1)
+    pg.locator(".st-key-tabs button", has_text=re.compile("^Bewertung$")).click(); wait(pg, 3500)
+    pl = pg.locator(".js-plotly-plot").first
+    ok("Plotly: Hover aktiv, aber nicht ziehbar (dragmode aus, keine Werkzeugleiste)",
+       pg.evaluate("() => { const g = document.querySelector('.js-plotly-plot'); return !!g && g._fullLayout.dragmode === false && !document.querySelector('.modebar-container .modebar-btn') && g._fullLayout.hovermode !== false; }"))
+    pg.goto(BASE + "/?t=META&tab=Analysten", wait_until="networkidle"); wait(pg, 4500)
+    ok("Neuladen: angemeldet, Tab Analysten bleibt", pg.locator('input[type="password"]').count() == 0 and "Einstufungen" in main(pg))
+    pg.goto(BASE + "/?t=META", wait_until="networkidle"); wait(pg, 4500)
+    fr = pg.frame_locator("iframe").first
+    ok("Kurschart Übersicht: keine Einblendungen", fr.locator("#labs").count() == 0 and fr.locator("#rg button").count() == 6)
+    fr.locator("#ty button", has_text="Kerzen").click(); wait(pg, 600); fr.locator("#rg button", has_text="5J").click(); wait(pg, 600)
+    ok("Kurschart: Kerzen + 5J aktiv", "on" in (fr.locator("#ty button", has_text="Kerzen").get_attribute("class") or "") and "on" in (fr.locator("#rg button", has_text="5J").get_attribute("class") or ""))
+    btn(pg, "Swing-Tool"); ok("'Swing-Tool' behält ?t=META", "swing-tool" in pg.url and "t=META" in pg.url)
+    pg.reload(wait_until="networkidle"); wait(pg, 4500)
+    ok("Neuladen Swing-Tool: angemeldet, META", pg.locator('input[type="password"]').count() == 0 and "Meta Platforms" in main(pg))
+    btn(pg, "Aktienanalyse"); ok("'Aktienanalyse' behält ?t=META", "swing-tool" not in pg.url and "t=META" in pg.url)
+    pg.go_back(); wait(pg, 3500); ok("Zurück: Swing-Tool mit ?t=META", "swing-tool" in pg.url and "t=META" in pg.url and "Meta Platforms" in main(pg))
+    pg.go_forward(); wait(pg, 3500); ok("Vor: Aktienanalyse mit ?t=META", "swing-tool" not in pg.url and "t=META" in pg.url)
+    for lab, part in (("Swing-Tool", "swing-tool"), ("Über das Projekt", "projekt"), ("Aktienanalyse", "aktienanalyse")):
+        pg.locator(".st-key-topnav").get_by_role("link", name=lab, exact=True).click(); wait(pg)
+        ok(f"Kopfzeile '{lab}' behält ?t=META", part in pg.url and "t=META" in pg.url)
+    # Deep-Link mit Tab (angemeldet), Zurück behält Tab
+    pg.goto(BASE + "/aktienanalyse?t=META&tab=Analysten", wait_until="networkidle"); wait(pg, 4500)
+    ok("Deep-Link /aktienanalyse?t=META&tab=Analysten öffnet Tab Analysten", "Einstufungen" in main(pg) and "tab=Analysten" in pg.url and "t=META" in pg.url)
+    pg.locator(".st-key-tabs button", has_text=re.compile("^Bewertung$")).click(); wait(pg, 3500)
+    pg.go_back(); wait(pg, 4000)
+    ok("Zurück nach Tabwechsel: wieder Analysten", "Einstufungen" in main(pg) and "tab=Analysten" in pg.url)
+    pg.reload(wait_until="networkidle"); wait(pg, 4500)
+    ok("Neuladen behält Tab Analysten", "Einstufungen" in main(pg))
+    c4 = b.new_context(viewport={"width": 1440, "height": 1000}); p4 = c4.new_page()
+    p4.goto(BASE + "/?t=NVDA&tab=Bewertung", wait_until="networkidle"); wait(p4, 2500)
+    p4.fill('input[type="password"]', PW); p4.keyboard.press("Enter"); wait(p4, 5500)
+    ok("Login über Deep-Link: Tab Bewertung + ?t=NVDA bleiben", ("Spanne pessimistisch" in main(p4) or "nicht belastbar" in main(p4)) and "t=NVDA" in p4.url and "tab=Bewertung" in p4.url)
+    # Aktienanalyse-Regeln v4
+    for s_ in ("META", "NVDA"):
+        for tab in ("Übersicht", "Analysten", "Bewertung", "Szenarien", "Finanzdaten"):
+            pg.goto(BASE + f"/aktienanalyse?t={s_}&tab={tab}", wait_until="networkidle"); wait(pg, 4000)
+            btxt = " ".join(pg.locator("[data-testid=stMain] button").all_inner_texts())
+            ok(f"{s_}/{tab}: keine Exception, kein 'öffnen'-Button, keine Erläuterungs-Fußnoten",
+               pg.locator('[data-testid="stException"]').count() == 0 and "öffnen" not in btxt and "Zur Analyse" not in btxt and pg.locator(".inote").count() == 0)
+            multi = pg.evaluate("() => [...document.querySelectorAll('.js-plotly-plot')].filter(g => g._fullData.filter(d => d.hoverinfo !== 'skip' && d.visible !== false && (d.type==='bar'||d.mode)).length > 1 && g._fullData.some(d=>d.type==='bar' && d.orientation!=='h')).map(g => g._fullLayout.hovermode)")
+            ok(f"{s_}/{tab}: Mehrreihen-Balken mit Tooltip 'x unified' {multi}", all(m == "x unified" for m in multi))
+    pg.goto(BASE + "/aktienanalyse?t=META&tab=Analysten", wait_until="networkidle"); wait(pg, 4000)
+    tx = main(pg)
+    ok("Analysten: 5 Kategorien Starker Kauf … Starker Verkauf", all(w in tx for w in ("Starker Kauf", "Kaufen", "Halten", "Verkaufen", "Starker Verkauf")) and pg.locator(".agrt").count() == 5)
+    ok("Analysten: Prognose-Chart, Tabelle, Akkordeons", pg.locator(".agft").count() == 1 and pg.locator("[class*=st-key-agacc] [data-testid=stExpander]").count() >= 3 and "Umsatzprognose" in tx)
+    pg.locator(".st-key-agper_META button", has_text=re.compile("^Quartal$")).click(); wait(pg, 3500)
+    ok("Analysten: Quartal-Umschalter ?per=Quartal, TTM-Chart", "per=Quartal" in pg.url and "Umsatz je Quartal" in pg.evaluate("() => [...document.querySelectorAll('.js-plotly-plot')].map(g => g._fullLayout.title.text).join(' ')"))
+    pg.locator(".st-key-agper_META button", has_text=re.compile("^Jährlich$")).click(); wait(pg, 3000)
+    ok("Kopf: Performance-Zeile 6 Werte, einzeilig", pg.locator(".agperf span").count() == 6 and pg.evaluate("() => { const e = document.querySelector('.agperf'); return e.scrollHeight < 30; }"))
+    pg.goto(BASE + "/aktienanalyse", wait_until="networkidle"); wait(pg, 5000)
+    pg.locator(".st-key-agcardbtn_NVDA").click(); wait(pg, 6000)
+    ok("Startkachel NVDA öffnet direkt per Klick", "t=NVDA" in pg.url and "Nvidia" in main(pg))
+    pg.goto(BASE + "/", wait_until="networkidle"); wait(pg, 3500)
+    ok("Startseite: keine 'Zur Analyse'-Links", "Zur Analyse" not in main(pg))
+    pg.locator(".st-key-mbtn_VIX button").click(); wait(pg, 4000)
+    ok("Marktliste: Klick auf VIX wählt VIX (markiert) und zeigt Chart", pg.locator(".st-key-mrow_VIX .mr.on").count() == 1 and pg.locator(".st-key-chartbox .js-plotly-plot").count() == 1)
+    pg.goto(BASE + "/", wait_until="networkidle"); wait(pg, 3500)
+    pg.locator('a[href^="/aktienanalyse?t="]').first.click(); wait(pg, 4000)
+    ok("Gewinner/Verlierer-Kachel öffnet Aktienanalyse", "aktienanalyse" in pg.url and "t=" in pg.url and pg.locator('[data-testid="stException"]').count() == 0)
+    pg.goto(BASE + "/aktienanalyse?t=META&tab=Szenarien", wait_until="networkidle"); wait(pg, 4000)
+    ok("Szenarien: kein Zeitraum-Umschalter (keine Quartalsdaten für Szenarien)", pg.locator("[class*=st-key-agper_]").count() == 0)
+    pg.goto(BASE + "/aktienanalyse?t=META&tab=Analysten&per=Quartal", wait_until="networkidle"); wait(pg, 4000)
+    tq = main(pg)
+    ok("Analysten Quartal: Daten je Quartal (Q-Spalten, Umsatz je Quartal)", "Umsatz je Quartal" in tq and "Q2 2026" in tq)
+    _all = _j.load(open("./data/valuation_v4.json"))["stocks"]
+    _nov = next((k for k, v in _all.items() if v.get("status") != "ok" and "." not in k and "_" not in k), None)
+    if _nov:
+        pg.goto(BASE + f"/aktienanalyse?t={_nov}&tab=Bewertung", wait_until="networkidle"); wait(pg, 4500)
+        ok(f"Bewertung ohne v3-Wert ({_nov}): Blöcke ausgeblendet, kein Fehler", "keine Bewertung vor" in main(pg) and pg.locator('[data-testid="stException"]').count() == 0)
+    _bank = next((k for k, v in _all.items() if v.get("status") == "ok" and v["classification"]["model"] == "excess_returns" and v["range"]["base"] > 0), None)
+    if _bank:
+        pg.goto(BASE + f"/aktienanalyse?t={_bank}&tab=Bewertung", wait_until="networkidle"); wait(pg, 4500)
+        ok(f"Bewertung Finanzwert ({_bank}): Übergewinn-Modell, kein Fehler", "Übergewinn" in main(pg) and pg.locator('[data-testid="stException"]').count() == 0)
+    pg.goto(BASE + "/aktienanalyse?t=META&tab=Bewertung", wait_until="networkidle"); wait(pg, 4500)
+    tb = main(pg)
+    ok("Bewertung: KGV-Abstand zum 5-Jahres-Median + Forward-KGV, keine 'Handelstage'-Prozentformulierung", "5-Jahres-Median" in tb and "Forward-KGV" in tb and "% der Handelstage" not in tb)
+    b.close()
+for r in res: print(r[1], "-", r[0])
+print(sum(r[1] == "pass" for r in res), "/", len(res))
