@@ -1,0 +1,26 @@
+# data is never committed (licensing)
+data/
+data_*/
+data_store/
+valuation/cache/
+valuation/data/
+backtest/studies/*.parquet
+backtest/studies/*.pkl
+backtest/studies/*.json
+backtest/studies/*.csv
+*.parquet
+*.pkl
+*.duckdb
+*.csv
+# secrets
+.env
+.env.*
+.demo_password
+*.key
+# local
+.venv/
+__pycache__/
+*.pyc
+*.log
+screenshots/
+*backup*
