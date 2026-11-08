@@ -22,5 +22,6 @@ backtest/studies/*.csv
 __pycache__/
 *.pyc
 *.log
-screenshots/
+# Generated click-test output at the repo root. docs/screenshots/ is not ignored.
+/screenshots/
 *backup*
